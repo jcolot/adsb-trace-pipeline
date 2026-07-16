@@ -1,0 +1,46 @@
+name: daily-trace-pipeline
+
+on:
+  schedule:
+    - cron: "0 4 * * *"   # 04:00 UTC — after the ~03:26 UTC prod-0 release drops
+  workflow_dispatch:       # allow manual runs from the Actions tab
+
+permissions:
+  contents: read           # gh needs only read access to the (public) source repo
+
+concurrency:
+  group: daily-trace-pipeline
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+
+      - name: Run pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARIANT: prod-0
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: legs
+          # rclone S3 remote "r2" assembled entirely from env (no config file)
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACL: private
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: bash run_pipeline.sh

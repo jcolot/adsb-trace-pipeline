@@ -1,0 +1,15 @@
+# pipeline scratch + outputs (regenerated each run)
+work/
+out/
+bezier/
+legs/
+sample_*/
+subset_*/
+prod-0-*/
+
+# python
+__pycache__/
+*.pyc
+
+# parquet artifacts
+*.parquet
