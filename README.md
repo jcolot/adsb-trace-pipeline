@@ -89,6 +89,12 @@ So a partition is:
 `https://pub-135f2252a0074f0b9761b0dc93a75fa5.r2.dev/legs/airports/airport=<ICAO>/data_0.parquet`
 and the leg index is `.../legs/flights.parquet`.
 
+**Exactly one file per airport.** The per-airport write is single-threaded so each
+partition is a single `data_0.parquet` (DuckDB's parallel partitioned write would
+otherwise emit `data_0`, `data_1`, … per busy airport, which a browser can't
+discover over HTTP since it can't list a directory). Fetch `data_0.parquet` and
+you have the whole airport.
+
 To move to a CDN-cached custom domain later (e.g. `splines.<domain>`), connect it
 in **R2 → bucket → Settings → Custom Domains**; only this base URL changes on the
 frontend — the pipeline is unaffected.

@@ -274,6 +274,12 @@ def main():
                    f"WHERE p.dep IS NOT NULL")
         arr_sel = (f"SELECT p.*, p.arr AS airport FROM '{pl_path}' p "
                    f"WHERE p.arr IS NOT NULL AND p.arr <> p.dep")
+    # Single-thread this one write so every partition gets exactly ONE file
+    # (data_0.parquet). DuckDB's parallel partitioned write otherwise has each
+    # thread flush its own data_N.parquet per partition, and a browser can't list
+    # a directory over HTTP to discover data_1/data_2 -- so the frontend contract
+    # must be one predictable file per airport. This write is cheap vs the fit.
+    con.execute("SET threads TO 1")
     con.execute(f"""
         COPY (
           {dep_sel}
@@ -283,6 +289,7 @@ def main():
         ) TO '{apath}' (FORMAT parquet, PARTITION_BY (airport),
                         OVERWRITE_OR_IGNORE, COMPRESSION zstd)
     """)
+    con.execute("RESET threads")
 
     n_air = con.execute(f"SELECT count(DISTINCT airport) FROM (SELECT dep AS airport "
                         f"FROM '{pl_path}' WHERE dep IS NOT NULL UNION SELECT arr "
