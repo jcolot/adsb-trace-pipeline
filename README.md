@@ -75,6 +75,32 @@ Repo **secrets**:
 | `R2_SECRET_ACCESS_KEY` | R2 API token secret |
 | `R2_ENDPOINT` | `https://<account-id>.r2.cloudflarestorage.com` |
 
-R2 has **no egress fees**, so the browser can range-fetch partitions directly.
-Enable a public bucket (or a custom domain) and set CORS to allow your frontend
-origin with `GET`, `HEAD`, and the `Range` header.
+R2 has **no egress fees**, so the browser range-fetches partitions directly.
+
+### Frontend read URL
+
+Public bucket base (r2.dev dev URL — rate-limited, not CDN-cached, fine to start):
+
+```
+https://pub-135f2252a0074f0b9761b0dc93a75fa5.r2.dev/legs
+```
+
+So a partition is:
+`https://pub-135f2252a0074f0b9761b0dc93a75fa5.r2.dev/legs/airports/airport=<ICAO>/data_0.parquet`
+and the leg index is `.../legs/flights.parquet`.
+
+To move to a CDN-cached custom domain later (e.g. `splines.<domain>`), connect it
+in **R2 → bucket → Settings → Custom Domains**; only this base URL changes on the
+frontend — the pipeline is unaffected.
+
+### CORS
+
+hyparquet issues cross-origin **Range** requests, so set the bucket CORS policy
+(**R2 → bucket → Settings → CORS**) to allow your frontend origin:
+
+```json
+[{"AllowedOrigins":["<FRONTEND_ORIGIN>"],
+  "AllowedMethods":["GET","HEAD"],
+  "AllowedHeaders":["range","content-type"],
+  "ExposeHeaders":["content-length","content-range","accept-ranges"]}]
+```
