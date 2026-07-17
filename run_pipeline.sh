@@ -21,11 +21,14 @@ CORNER="${CORNER:-35}"
 
 mkdir -p "$WORK" "$OUT"
 
-# 1. Latest release tag for the variant (releases are returned newest-first).
+# 1. Latest release tag for the variant. Releases are newest-first, so the first
+#    page holds the latest of every variant -- do NOT use --paginate, which would
+#    apply --jq per page and return one tag *per page* instead of a single match.
 echo "::group::resolve release"
-TAG="$(gh api "repos/$REPO/releases" --paginate \
+TAG="$(gh api "repos/$REPO/releases?per_page=100" \
         --jq "[.[] | select(.tag_name | endswith(\"-planes-readsb-$VARIANT\"))][0].tag_name")"
-[ -n "$TAG" ] || { echo "no $VARIANT release found"; exit 1; }
+[ -n "$TAG" ] && [ "$(printf '%s' "$TAG" | wc -l)" -eq 0 ] \
+    || { echo "bad/empty $VARIANT tag: '$TAG'"; exit 1; }
 echo "using release: $TAG"
 echo "::endgroup::"
 
