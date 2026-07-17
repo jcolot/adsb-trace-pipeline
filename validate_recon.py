@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-validate_recon.py - correctness gate for the "light" Bezier output (positions +
+validate_recon.py - correctness gate for the spline-node output (positions +
 cusp, no stored handles). Reconstruct the curve the FRONTEND will draw --
 centripetal Catmull-Rom through the nodes, broken at cusp nodes -- and measure
 its distance from the RAW points against the graduated tolerance (2 m ground ->
-150 m cruise). If reconstruction stays within tolerance, dropping the handles is
-safe.
+150 m cruise). If reconstruction stays within tolerance, the nodes alone are
+enough to draw the track.
 """
 import argparse, glob, math, os, sys
 import importlib.util
@@ -16,7 +16,7 @@ def _load(m, p):
     s.loader.exec_module(x); return x
 HERE = os.path.dirname(os.path.abspath(__file__))
 ct = _load("ct", os.path.join(HERE, "compress_trace.py"))
-fb = _load("fb", os.path.join(HERE, "fit_bezier.py"))
+fb = _load("fb", os.path.join(HERE, "fit_spline.py"))
 
 def tol_at(alt, tg, tc, lo=500.0, hi=12000.0):
     if alt is None or alt <= lo: return tg

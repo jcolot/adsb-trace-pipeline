@@ -18,7 +18,7 @@ stable ground altitude, and no parked-at-gate "scribbles".
 
 ### Stages
 
-1. **`fit_bezier.py`** — `traces/ → nodes.parquet` + `aircraft.parquet`.
+1. **`fit_spline.py`** — `traces/ → nodes.parquet` + `aircraft.parquet`.
    Per-second decimation (mean position **and** time), stationary-gate snapping,
    ground-elevation reference, greedy CR-node placement.
 2. **`build_legs.py`** — `nodes.parquet → legs/` (per-airport partitions +
@@ -48,10 +48,10 @@ new curve at every `cusp` node.
 
 ```bash
 pip install -r requirements.txt
-python3 fit_bezier.py path/to/traces --ground-elevation \
-    --parquet bezier --tol-ground 2 --tol-cruise 150 --corner 35
-python3 build_legs.py --traces bezier/nodes.parquet \
-    --meta bezier/aircraft.parquet --out-dir out/legs
+python3 fit_spline.py path/to/traces --ground-elevation \
+    --parquet nodes --tol-ground 2 --tol-cruise 150 --corner 35
+python3 build_legs.py --traces nodes/nodes.parquet \
+    --meta nodes/aircraft.parquet --out-dir out/legs
 ```
 
 `run_pipeline.sh` does the whole daily job end-to-end (resolve latest release →

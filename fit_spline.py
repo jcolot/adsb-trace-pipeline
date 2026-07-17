@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-fit_bezier.py - Schneider cubic-Bezier auto-fit of flight tracks with
-altitude-graduated tolerance (the algorithm from the interactive editor),
-plus a compact codec, to answer two questions: how fast does it fit, and how
-small does it compress with the right encoding.
+fit_spline.py - fit each flight track to a sparse set of centripetal
+Catmull-Rom spline nodes with altitude-graduated tolerance.
 
-Fit: per phase-segment (split at sharp taxi corners and ground<->air), fit a
-chain of cubic Beziers whose max error stays under a per-point tolerance that
-ramps from --tol-ground (m) on the surface to --tol-cruise (m) up high.
+Fit: per phase-segment (split at sharp taxi corners and ground<->air, marked as
+cusps), greedily place interpolation nodes until the centripetal Catmull-Rom curve
+through them -- the exact curve the frontend draws -- stays within a per-point
+tolerance that ramps from --tol-ground (m) on the surface to --tol-cruise (m) up
+high. Only the nodes are stored; no handles or coefficients are needed, because
+the curve is fully determined by the points it passes through (build_nodes_cr).
 
-Codec: the path is stored as
-    node positions (lat,lon)  -> quantized 1e-5 deg, delta + zig-zag varint
-    handle offsets (in,out)   -> quantized ~0.5 m, delta + zig-zag varint
-    altitude at node          -> delta varint (ft/25)
-    cusp bit                  -> bitfield
-then gzip. Handles are small offsets from their node, so they delta-code tiny.
+Output (--parquet DIR): nodes.parquet + aircraft.parquet. Columns t (deciseconds),
+lat, lon (fixed-point), alt (ft), on_ground, cusp -- DELTA_BINARY_PACKED + zstd.
+
+The Schneider cubic-Bezier fitter (gen_bezier / fit_curve / build_nodes / the
+predictive-handle codec) is retained below as reference; it is not on the output
+path -- the stored format is Catmull-Rom nodes, not Beziers.
 
 Usage:
-    ./fit_bezier.py subset_ebbr/traces --ground-elevation          # batch: speed+size
-    ./fit_bezier.py path/to/trace_full_XXXX.json --dump            # one flight
+    ./fit_spline.py subset_ebbr/traces --ground-elevation --parquet nodes   # batch
+    ./fit_spline.py path/to/trace_full_XXXX.json --dump                     # one flight
 """
 import argparse, glob, gzip, heapq, math, os, sys, time
 import importlib.util
@@ -678,7 +679,7 @@ def main():
     wall = time.perf_counter()-t0
     per_ms.sort()
     src = sum(os.path.getsize(f) for f in files)
-    print(f"\nBEZIER FIT  ({n_ac} aircraft, tol {a.tg:.0f}m->{a.tc:.0f}m, corner {a.corner:.0f})")
+    print(f"\nSPLINE FIT  ({n_ac} aircraft, tol {a.tg:.0f}m->{a.tc:.0f}m, corner {a.corner:.0f})")
     print(f"  raw points        : {tot_raw:,}")
     print(f"  nodes             : {tot_nodes:,}  ({tot_raw/max(tot_nodes,1):.1f}x fewer than raw)")
     print(f"  fit time          : {wall:.1f}s total, "

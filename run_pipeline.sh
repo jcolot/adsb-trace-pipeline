@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Daily ADS-B trace pipeline:
-#   resolve latest adsblol release -> stream-extract traces -> fit Bezier nodes
+#   resolve latest adsblol release -> stream-extract traces -> fit spline nodes
 #   -> split into per-airport legs -> upload to Cloudflare R2.
 # Designed to stream the ~4 GB download straight into tar so peak disk is only the
 # ~2.9 GB extracted tree (no 4 GB of archive parts sitting on the runner).
@@ -42,18 +42,18 @@ echo "extracted $(find "$WORK/traces" -name 'trace_full_*.json' | wc -l) traces"
 echo "::endgroup::"
 
 # 3. Fit sparse centripetal-CR nodes, then split into per-airport legs.
-echo "::group::fit_bezier"
-python3 "$SCRIPT_DIR/fit_bezier.py" "$WORK/traces" --ground-elevation \
+echo "::group::fit_spline"
+python3 "$SCRIPT_DIR/fit_spline.py" "$WORK/traces" --ground-elevation \
     --airports "$SCRIPT_DIR/airports.csv" \
-    --parquet "$WORK/bezier" \
+    --parquet "$WORK/nodes" \
     --tol-ground "$TOL_GROUND" --tol-cruise "$TOL_CRUISE" --corner "$CORNER"
 echo "::endgroup::"
 
 echo "::group::build_legs"
 rm -rf "$OUT/legs"
 python3 "$SCRIPT_DIR/build_legs.py" \
-    --traces "$WORK/bezier/nodes.parquet" \
-    --meta "$WORK/bezier/aircraft.parquet" \
+    --traces "$WORK/nodes/nodes.parquet" \
+    --meta "$WORK/nodes/aircraft.parquet" \
     --out-dir "$OUT/legs"
 echo "::endgroup::"
 
