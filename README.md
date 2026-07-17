@@ -99,8 +99,12 @@ hyparquet issues cross-origin **Range** requests, so set the bucket CORS policy
 (**R2 → bucket → Settings → CORS**) to allow your frontend origin:
 
 ```json
-[{"AllowedOrigins":["<FRONTEND_ORIGIN>"],
+[{"AllowedOrigins":["https://timefli.es","http://localhost:4200"],
   "AllowedMethods":["GET","HEAD"],
   "AllowedHeaders":["range","content-type"],
-  "ExposeHeaders":["content-length","content-range","accept-ranges"]}]
+  "ExposeHeaders":["content-length","content-range","accept-ranges"],
+  "MaxAgeSeconds":3600}]
 ```
+
+(Add `https://www.timefli.es` or other dev ports here if the frontend ever loads
+from them — CORS origins must match scheme + host + port exactly.)
