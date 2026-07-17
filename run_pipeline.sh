@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Daily ADS-B trace pipeline:
-#   resolve latest adsblol release -> stream-extract traces -> fit spline nodes
-#   -> split into per-airport legs -> upload to Cloudflare R2.
-# Designed to stream the ~4 GB download straight into tar so peak disk is only the
-# ~2.9 GB extracted tree (no 4 GB of archive parts sitting on the runner).
+# Daily ADS-B trace pipeline, split into phases so each can run as its own CI step:
+#   resolve  -> find the latest adsblol release tag for the variant
+#   fetch    -> stream the split-tar assets straight into tar (no 4-6 GB staged)
+#   fit      -> fit sparse Catmull-Rom spline nodes (fit_spline.py)
+#   legs     -> split into per-airport leg partitions (build_legs.py)
+#   upload   -> rclone sync the legs to Cloudflare R2
+# Run a single phase (`run_pipeline.sh fit`) or the whole thing (`run_pipeline.sh`
+# / `run_pipeline.sh all`). Phases share state through $WORK (the resolved tag is
+# written to $WORK/TAG), so the CI steps hand off via the persisted workspace.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,57 +17,63 @@ VARIANT="${VARIANT:-prod-0}"            # prod-0 (ADS-B) | mlatonly-0 | staging-
 WORK="${WORK:-$SCRIPT_DIR/work}"
 OUT="${OUT:-$SCRIPT_DIR/out}"
 R2_PREFIX="${R2_PREFIX:-legs}"
-: "${R2_BUCKET:?set R2_BUCKET (Cloudflare R2 bucket name)}"
-
 TOL_GROUND="${TOL_GROUND:-2}"
 TOL_CRUISE="${TOL_CRUISE:-150}"
 CORNER="${CORNER:-35}"
+TAGFILE="$WORK/TAG"
 
-mkdir -p "$WORK" "$OUT"
+resolve() {
+    mkdir -p "$WORK"
+    # Releases are newest-first, so the first page holds the latest of every
+    # variant -- do NOT --paginate (that applies --jq per page -> one tag per page).
+    local tag
+    tag="$(gh api "repos/$REPO/releases?per_page=100" \
+            --jq "[.[] | select(.tag_name | endswith(\"-planes-readsb-$VARIANT\"))][0].tag_name")"
+    [ -n "$tag" ] && [ "$(printf '%s' "$tag" | wc -l)" -eq 0 ] \
+        || { echo "bad/empty $VARIANT tag: '$tag'"; exit 1; }
+    echo "$tag" >"$TAGFILE"
+    echo "resolved $VARIANT release: $tag"
+}
 
-# 1. Latest release tag for the variant. Releases are newest-first, so the first
-#    page holds the latest of every variant -- do NOT use --paginate, which would
-#    apply --jq per page and return one tag *per page* instead of a single match.
-echo "::group::resolve release"
-TAG="$(gh api "repos/$REPO/releases?per_page=100" \
-        --jq "[.[] | select(.tag_name | endswith(\"-planes-readsb-$VARIANT\"))][0].tag_name")"
-[ -n "$TAG" ] && [ "$(printf '%s' "$TAG" | wc -l)" -eq 0 ] \
-    || { echo "bad/empty $VARIANT tag: '$TAG'"; exit 1; }
-echo "using release: $TAG"
-echo "::endgroup::"
+fetch() {
+    local tag; tag="$(cat "$TAGFILE")"
+    rm -rf "$WORK/traces"
+    # browser_download_url is public, so curl concatenates the .tar.aa/.ab/.ac
+    # parts (sorted) to stdout in one pass -> tar extracts, nothing staged on disk.
+    mapfile -t urls < <(gh api "repos/$REPO/releases/tags/$tag" \
+            --jq '.assets[].browser_download_url' | sort)
+    echo "streaming ${#urls[@]} asset parts into tar..."
+    curl -fsSL "${urls[@]}" | tar -x -C "$WORK"
+    echo "extracted $(find "$WORK/traces" -name 'trace_full_*.json' | wc -l) traces"
+}
 
-# 2. Stream the split-tar assets (.tar.aa, .tar.ab, ... in name order) into tar.
-#    browser_download_url is public for a public repo, so curl needs no auth and
-#    concatenates the parts to stdout in one pass -> no 4 GB staged on disk.
-echo "::group::download + extract"
-rm -rf "$WORK/traces"
-mapfile -t URLS < <(gh api "repos/$REPO/releases/tags/$TAG" \
-        --jq '.assets[].browser_download_url' | sort)
-echo "assets: ${#URLS[@]}"
-curl -fsSL "${URLS[@]}" | tar -x -C "$WORK"
-echo "extracted $(find "$WORK/traces" -name 'trace_full_*.json' | wc -l) traces"
-echo "::endgroup::"
+fit() {
+    python3 "$SCRIPT_DIR/fit_spline.py" "$WORK/traces" --ground-elevation \
+        --airports "$SCRIPT_DIR/airports.csv" --parquet "$WORK/nodes" \
+        --tol-ground "$TOL_GROUND" --tol-cruise "$TOL_CRUISE" --corner "$CORNER"
+}
 
-# 3. Fit sparse centripetal-CR nodes, then split into per-airport legs.
-echo "::group::fit_spline"
-python3 "$SCRIPT_DIR/fit_spline.py" "$WORK/traces" --ground-elevation \
-    --airports "$SCRIPT_DIR/airports.csv" \
-    --parquet "$WORK/nodes" \
-    --tol-ground "$TOL_GROUND" --tol-cruise "$TOL_CRUISE" --corner "$CORNER"
-echo "::endgroup::"
+legs() {
+    mkdir -p "$OUT"; rm -rf "$OUT/legs"
+    python3 "$SCRIPT_DIR/build_legs.py" \
+        --traces "$WORK/nodes/nodes.parquet" \
+        --meta "$WORK/nodes/aircraft.parquet" --out-dir "$OUT/legs"
+}
 
-echo "::group::build_legs"
-rm -rf "$OUT/legs"
-python3 "$SCRIPT_DIR/build_legs.py" \
-    --traces "$WORK/nodes/nodes.parquet" \
-    --meta "$WORK/nodes/aircraft.parquet" \
-    --out-dir "$OUT/legs"
-echo "::endgroup::"
+upload() {
+    : "${R2_BUCKET:?set R2_BUCKET (Cloudflare R2 bucket name)}"
+    local tag; tag="$(cat "$TAGFILE" 2>/dev/null || echo '?')"
+    rclone sync "$OUT/legs" "r2:$R2_BUCKET/$R2_PREFIX" \
+        --checksum --transfers 16 --fast-list --stats-one-line
+    echo "DONE: $tag -> r2:$R2_BUCKET/$R2_PREFIX"
+}
 
-# 4. Publish to R2 (rclone remote "r2" comes from RCLONE_CONFIG_R2_* env vars).
-echo "::group::upload to r2:$R2_BUCKET/$R2_PREFIX"
-rclone sync "$OUT/legs" "r2:$R2_BUCKET/$R2_PREFIX" \
-    --checksum --transfers 16 --fast-list --stats-one-line
-echo "::endgroup::"
-
-echo "DONE: $TAG -> r2:$R2_BUCKET/$R2_PREFIX"
+case "${1:-all}" in
+    resolve) resolve ;;
+    fetch)   fetch ;;
+    fit)     fit ;;
+    legs)    legs ;;
+    upload)  upload ;;
+    all)     resolve; fetch; fit; legs; upload ;;
+    *) echo "usage: $0 [resolve|fetch|fit|legs|upload|all]" >&2; exit 2 ;;
+esac

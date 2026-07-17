@@ -16,6 +16,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VARIANT: prod-0
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_PREFIX: legs
+      # rclone S3 remote "r2" assembled entirely from env (no config file)
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,17 +42,17 @@ jobs:
           pip install -r requirements.txt
           sudo apt-get update -qq && sudo apt-get install -y -qq rclone
 
-      - name: Run pipeline
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VARIANT: prod-0
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-          R2_PREFIX: legs
-          # rclone S3 remote "r2" assembled entirely from env (no config file)
-          RCLONE_CONFIG_R2_TYPE: s3
-          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-          RCLONE_CONFIG_R2_ACL: private
-          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: bash run_pipeline.sh
+      - name: Resolve latest release
+        run: bash run_pipeline.sh resolve
+
+      - name: Download + extract traces
+        run: bash run_pipeline.sh fetch
+
+      - name: Fit spline nodes
+        run: bash run_pipeline.sh fit
+
+      - name: Build per-airport legs
+        run: bash run_pipeline.sh legs
+
+      - name: Upload to R2
+        run: bash run_pipeline.sh upload
