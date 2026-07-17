@@ -131,10 +131,11 @@ def main():
     ap.add_argument("--out-dir", default="airport_ds")
     ap.add_argument("--limit-aircraft", type=int, default=0)
     ap.add_argument("--airport-radius-km", dest="airport_radius", type=float,
-                    default=40.0, help="per-airport files keep only the leg's "
-                    "points within this radius of the airport (local taxi + "
-                    "approach/departure); drops the enroute + far-airport taxi "
-                    "that made a grounded aircraft appear to jump between fields")
+                    default=0.0, help="if > 0, per-airport files keep only the "
+                    "leg's points within this radius of the airport (local taxi + "
+                    "approach/departure). Default 0 = keep the FULL leg path in "
+                    "each airport partition (legs are already split by leg_id, so "
+                    "the frontend draws each as one continuous dep->arr track)")
     a = ap.parse_args()
 
     con = duckdb.connect()
@@ -241,35 +242,43 @@ def main():
     pq.write_table(lt, os.path.join(a.out_dir, "flights.parquet"),
                    compression="zstd", use_dictionary=["dep", "arr", "type", "reg"])
 
-    # per-airport files: each leg under BOTH dep and arr (hive-partitioned),
-    # CLIPPED to the airport's vicinity so a file only carries the local taxi +
-    # approach/departure, not the enroute leg or the far airport's taxi (which
-    # made a grounded aircraft appear to teleport 1000+ km between fields).
+    # per-airport files: each leg under BOTH dep and arr (hive-partitioned). With
+    # --airport-radius-km > 0 the copy is CLIPPED to the airport's vicinity; by
+    # default the FULL leg path is kept in each partition (legs are split by
+    # leg_id and drawn per-leg, so a full dep->arr track is continuous, not a
+    # teleport between fields).
     apath = os.path.join(a.out_dir, "airports")
-    con.execute("""
-        CREATE OR REPLACE TEMP MACRO km(la1, lo1, la2, lo2) AS
-          6371 * 2 * asin(sqrt(
-            power(sin(radians(la2 - la1) / 2), 2) +
-            cos(radians(la1)) * cos(radians(la2)) *
-            power(sin(radians(lo2 - lo1) / 2), 2)))
-    """)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE ap AS
-        SELECT ident AS code, latitude_deg AS lat, longitude_deg AS lon
-        FROM read_csv_auto('{a.airports}')
-        WHERE ident IS NOT NULL AND latitude_deg IS NOT NULL
-    """)
+    if a.airport_radius and a.airport_radius > 0:
+        con.execute("""
+            CREATE OR REPLACE TEMP MACRO km(la1, lo1, la2, lo2) AS
+              6371 * 2 * asin(sqrt(
+                power(sin(radians(la2 - la1) / 2), 2) +
+                cos(radians(la1)) * cos(radians(la2)) *
+                power(sin(radians(lo2 - lo1) / 2), 2)))
+        """)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE ap AS
+            SELECT ident AS code, latitude_deg AS lat, longitude_deg AS lon
+            FROM read_csv_auto('{a.airports}')
+            WHERE ident IS NOT NULL AND latitude_deg IS NOT NULL
+        """)
+        dep_sel = (f"SELECT p.*, p.dep AS airport FROM '{pl_path}' p "
+                   f"JOIN ap d ON p.dep = d.code WHERE p.dep IS NOT NULL "
+                   f"AND km(d.lat, d.lon, p.lat / 1e5, p.lon / 1e5) < {a.airport_radius}")
+        arr_sel = (f"SELECT p.*, p.arr AS airport FROM '{pl_path}' p "
+                   f"JOIN ap r ON p.arr = r.code WHERE p.arr IS NOT NULL "
+                   f"AND p.arr <> p.dep "
+                   f"AND km(r.lat, r.lon, p.lat / 1e5, p.lon / 1e5) < {a.airport_radius}")
+    else:
+        dep_sel = (f"SELECT p.*, p.dep AS airport FROM '{pl_path}' p "
+                   f"WHERE p.dep IS NOT NULL")
+        arr_sel = (f"SELECT p.*, p.arr AS airport FROM '{pl_path}' p "
+                   f"WHERE p.arr IS NOT NULL AND p.arr <> p.dep")
     con.execute(f"""
         COPY (
-          SELECT p.*, p.dep AS airport
-          FROM '{pl_path}' p JOIN ap d ON p.dep = d.code
-          WHERE p.dep IS NOT NULL
-            AND km(d.lat, d.lon, p.lat / 1e5, p.lon / 1e5) < {a.airport_radius}
+          {dep_sel}
           UNION ALL
-          SELECT p.*, p.arr AS airport
-          FROM '{pl_path}' p JOIN ap r ON p.arr = r.code
-          WHERE p.arr IS NOT NULL AND p.arr <> p.dep
-            AND km(r.lat, r.lon, p.lat / 1e5, p.lon / 1e5) < {a.airport_radius}
+          {arr_sel}
           ORDER BY airport, icao, t
         ) TO '{apath}' (FORMAT parquet, PARTITION_BY (airport),
                         OVERWRITE_OR_IGNORE, COMPRESSION zstd)
