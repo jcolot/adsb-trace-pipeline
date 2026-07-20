@@ -21,6 +21,7 @@ jobs:
       VARIANT: prod-0
       R2_BUCKET: ${{ vars.R2_BUCKET }}
       R2_PREFIX: legs
+      RETENTION_DAYS: "30"   # keep the newest N date partitions; older are pruned
       # rclone S3 remote "r2" assembled entirely from env (no config file)
       RCLONE_CONFIG_R2_TYPE: s3
       RCLONE_CONFIG_R2_PROVIDER: Cloudflare

@@ -85,15 +85,24 @@ Public bucket base (r2.dev dev URL — rate-limited, not CDN-cached, fine to sta
 https://pub-135f2252a0074f0b9761b0dc93a75fa5.r2.dev/legs
 ```
 
-So a partition is:
-`https://pub-135f2252a0074f0b9761b0dc93a75fa5.r2.dev/legs/airports/airport=<ICAO>/data_0.parquet`
-and the leg index is `.../legs/flights.parquet`.
+**Data is partitioned by day.** Each day the pipeline processes lives under its own
+`date=YYYY-MM-DD/` prefix (the newest `RETENTION_DAYS` days are kept, older pruned).
+The date is the *data* date, taken from the release tag.
+
+1. **Discover available days** — fetch the manifest (a browser can't list a bucket):
+   ```
+   .../legs/dates.json   ->   {"dates": ["2026-07-18", "2026-07-19"], "latest": "2026-07-19"}
+   ```
+   Default the day picker to `latest`.
+2. **A partition** for a chosen `<DATE>`:
+   `https://pub-135f2252a0074f0b9761b0dc93a75fa5.r2.dev/legs/date=<DATE>/airports/airport=<ICAO>/data_0.parquet`
+3. **The leg index** for that day: `.../legs/date=<DATE>/flights.parquet`
 
 **Exactly one file per airport.** The per-airport write is single-threaded so each
 partition is a single `data_0.parquet` (DuckDB's parallel partitioned write would
 otherwise emit `data_0`, `data_1`, … per busy airport, which a browser can't
 discover over HTTP since it can't list a directory). Fetch `data_0.parquet` and
-you have the whole airport.
+you have the whole airport for that day.
 
 To move to a CDN-cached custom domain later (e.g. `splines.<domain>`), connect it
 in **R2 → bucket → Settings → Custom Domains**; only this base URL changes on the

@@ -62,10 +62,34 @@ legs() {
 
 upload() {
     : "${R2_BUCKET:?set R2_BUCKET (Cloudflare R2 bucket name)}"
+    local keep="${RETENTION_DAYS:-30}"
+    local base="r2:$R2_BUCKET/$R2_PREFIX"
     local tag; tag="$(cat "$TAGFILE" 2>/dev/null || echo '?')"
-    rclone sync "$OUT/legs" "r2:$R2_BUCKET/$R2_PREFIX" \
+    # data date lives in the release tag: v2026.07.17-...-prod-0 -> 2026-07-17
+    local date; date="$(printf '%s' "$tag" | sed -nE 's/^v([0-9]{4})\.([0-9]{2})\.([0-9]{2}).*/\1-\2-\3/p')"
+    [ -n "$date" ] || { echo "could not parse date from tag: $tag"; exit 1; }
+
+    # each day is its own self-contained prefix (airports/, points_legs, flights);
+    # sync only touches THIS date, so other days are never deleted.
+    rclone sync "$OUT/legs" "$base/date=$date" \
         --checksum --transfers 16 --fast-list --stats-one-line
-    echo "DONE: $tag -> r2:$R2_BUCKET/$R2_PREFIX"
+
+    # prune to the newest $keep date partitions
+    mapfile -t dates < <(rclone lsf --dirs-only "$base/" | sed 's#/$##' | grep '^date=' | sort)
+    local total=${#dates[@]}
+    if (( total > keep )); then
+        for d in "${dates[@]:0:total-keep}"; do
+            echo "pruning $d"; rclone purge "$base/$d"
+        done
+    fi
+
+    # rebuild the date manifest (a browser can't list a bucket over HTTP)
+    mapfile -t kept < <(rclone lsf --dirs-only "$base/" | sed 's#/$##' \
+        | grep '^date=' | sed 's/^date=//' | sort)
+    python3 -c "import json,sys; d=sys.argv[1:]; print(json.dumps({'dates':d,'latest':d[-1] if d else None}))" \
+        "${kept[@]}" > "$WORK/dates.json"
+    rclone copyto "$WORK/dates.json" "$base/dates.json"
+    echo "DONE: $tag -> $base/date=$date  (kept ${#kept[@]} day(s), retention $keep)"
 }
 
 case "${1:-all}" in
